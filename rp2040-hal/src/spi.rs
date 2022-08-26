@@ -26,6 +26,7 @@ use eh1_0_alpha::spi as eh1;
 use embedded_hal::blocking::spi;
 use embedded_hal::spi::{FullDuplex, Mode, Phase, Polarity};
 use embedded_time::rate::*;
+use nb::block;
 use pac::RESETS;
 
 /// State of the SPI
@@ -177,6 +178,9 @@ impl<D: SpiDevice, const DS: u8> Spi<Enabled, D, DS> {
     fn is_readable(&self) -> bool {
         self.device.sspsr.read().rne().bit_is_set()
     }
+    pub fn is_busy(&self) -> bool {
+        self.device.sspsr.read().bsy().bit_is_set()
+    }
 
     /// Disable the spi to reset its configuration
     pub fn disable(self) -> Spi<Disabled, D, DS> {
@@ -238,9 +242,54 @@ macro_rules! impl_write {
             }
         }
 
-        impl<D: SpiDevice> spi::write::Default<$type> for Spi<Enabled, D, $nr> {}
-        impl<D: SpiDevice> spi::transfer::Default<$type> for Spi<Enabled, D, $nr> {}
-        impl<D: SpiDevice> spi::write_iter::Default<$type> for Spi<Enabled, D, $nr> {}
+        impl<D: SpiDevice> spi::Write<$type> for Spi<Enabled, D, $nr>{
+            type Error = Infallible;
+
+            fn write(&mut self, words: &[$type]) -> Result<(), Self::Error>{
+                while let Ok(_) = self.read(){};
+                for word in words{
+                    block!(self.send(word.clone()))?;
+                    block!(self.read())?;
+                }
+                while self.is_busy(){
+                    //should maybe add a timeout with an error
+                };
+                Ok(())
+            }
+        }
+        impl<D: SpiDevice> spi::Transfer<$type> for Spi<Enabled, D, $nr> {
+            type Error = Infallible;
+
+            fn transfer<'w>(&mut self, words: &'w mut [$type]) -> Result<&'w [$type], Self::Error> {
+                while let Ok(_) = self.read(){};
+                for word in words.iter_mut() {
+                    block!(self.send(word.clone()))?;
+                    *word = block!(self.read())?;
+                }
+                while self.is_busy(){
+                    //should maybe add a timeout with an error
+                };
+                Ok(words)
+            }
+        }
+        impl<D: SpiDevice> spi::WriteIter<$type> for Spi<Enabled, D, $nr> {
+            type Error = Infallible;
+
+            fn write_iter<WI>(&mut self, words: WI) -> Result<(), Self::Error>
+            where
+                WI: IntoIterator<Item = $type>,
+            {
+                while let Ok(_) = self.read(){};
+                for word in words.into_iter() {
+                    block!(self.send(word.clone()))?;
+                    block!(self.read())?;
+                }
+                while self.is_busy(){
+                    //should maybe add a timeout with an error
+                };
+                Ok(())
+            }
+        }
 
         #[cfg(feature = "eh1_0_alpha")]
         impl<D: SpiDevice> eh1::ErrorType for Spi<Enabled, D, $nr> {
